@@ -1,0 +1,6 @@
+{
+  "name": "마음쉼",
+  "description": "학업, 진로, 인간관계로 지친 청소년들을 위한 따뜻한 감정 일기 분석 및 다정한 AI 공감 상담소",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
