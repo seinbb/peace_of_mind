@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from "react";
-import { Heart, Sparkles, BookOpen, FileSignature, ArrowLeft, RefreshCw, Moon, Star } from "lucide-react";
+import { Heart, Sparkles, BookOpen, FileSignature, ArrowLeft, RefreshCw, Moon, Star, Key, X, ExternalLink } from "lucide-react";
 import { DiaryEntry, AnalysisResponse } from "./types";
 import DiaryForm from "./components/DiaryForm";
 import AnalysisDashboard from "./components/AnalysisDashboard";
 import BreathingCoach from "./components/BreathingCoach";
 import DiaryHistory from "./components/DiaryHistory";
 import { motion, AnimatePresence } from "motion/react";
+import { GoogleGenAI, Type } from "@google/genai";
 
 // Mock helper to format dates beautifully in Korean
 const getFormattedDate = () => {
@@ -37,6 +38,11 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [loadingMsgIdx, setLoadingMsgIdx] = useState<number>(0);
 
+  // API Key state for standalone client-side usage
+  const [apiKey, setApiKey] = useState<string>("");
+  const [showKeyModal, setShowKeyModal] = useState<boolean>(false);
+  const [tempKey, setTempKey] = useState<string>("");
+
   const loadingMessages = [
     "너의 이야기를 귀담아듣고 있는 중이야...",
     "마음의 감정 키워드를 조심스레 헤아리는 중이야...",
@@ -55,47 +61,145 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isLoading]);
 
-  // Load from localstorage on mount
+  // Load entries and API key on mount
   useEffect(() => {
     try {
-      const saved = localStorage.getItem("maum_swim_entries");
-      if (saved) {
-        const parsed = JSON.parse(saved) as DiaryEntry[];
+      const savedEntries = localStorage.getItem("maum_swim_entries");
+      if (savedEntries) {
+        const parsed = JSON.parse(savedEntries) as DiaryEntry[];
         setEntries(parsed);
         if (parsed.length > 0) {
           setSelectedEntry(parsed[0]);
           setIsWriting(false);
         }
       }
+
+      // Check for custom stored API Key or fallback to build config env var
+      const storedKey = localStorage.getItem("maum_swim_api_key");
+      const defaultKey = (import.meta as any).env.VITE_GEMINI_API_KEY || "";
+      
+      if (storedKey) {
+        setApiKey(storedKey);
+        setTempKey(storedKey);
+      } else if (defaultKey) {
+        setApiKey(defaultKey);
+        setTempKey(defaultKey);
+      } else {
+        // Fallback for AI Studio inject sequence if applicable
+        const envKey = (window as any).GEMINI_API_KEY || "";
+        if (envKey) {
+          setApiKey(envKey);
+          setTempKey(envKey);
+        }
+      }
     } catch (e) {
-      console.error("Local storage loading error", e);
+      console.error("Initialization loading error", e);
     }
   }, []);
 
-  // Save to localstorage
+  // Save entries to localstorage
   const saveEntries = (newEntries: DiaryEntry[]) => {
     setEntries(newEntries);
     localStorage.setItem("maum_swim_entries", JSON.stringify(newEntries));
   };
 
+  // Save custom API key
+  const handleSaveApiKey = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = tempKey.trim();
+    setApiKey(trimmed);
+    if (trimmed) {
+      localStorage.setItem("maum_swim_api_key", trimmed);
+    } else {
+      localStorage.removeItem("maum_swim_api_key");
+    }
+    setShowKeyModal(false);
+  };
+
   const handleDiarySubmit = async (diaryText: string) => {
+    // 1. Ensure API Key is configured
+    const activeKey = apiKey || (import.meta as any).env.VITE_GEMINI_API_KEY || (window as any).GEMINI_API_KEY;
+    if (!activeKey || activeKey.trim() === "") {
+      setShowKeyModal(true);
+      setError("AI 분석과 따뜻한 공감을 받기 위해 우측 상단 'API 키 설정'에서 Google Gemini API Key를 등록해줘!");
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
     setLoadingMsgIdx(0);
 
     try {
-      const response = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ diary: diaryText }),
+      // 2. Initialize client directly in browser (Pure SPA Mode)
+      const ai = new GoogleGenAI({ apiKey: activeKey.trim() });
+
+      const systemInstruction = `너는 청소년 정서 지원 웹 서비스 '마음쉼'의 다정하고 따뜻한 심리 상담 AI 전문가야.
+학업, 진로, 인간관계로 지친 청소년들이 밤에 하루를 마무리하며 작성한 자유로운 일기를 읽고, 그들의 마음에 깊이 공감하며 감정 상태를 객관적으로 분석해 주는 역할을 해.
+
+어조: 친구처럼 친근하면서도 깊은 위로를 주는 따뜻한 반말 (예: 그랬구나, 정말 속상했겠다, 힘들었지?, 고생 많았어, 언제나 네 편이야)
+핵심 임무: 사용자의 글에서 감정의 키워드를 찾아내어 대시보드에 시각화할 수 있는 데이터와 공감 문장을 생성한다.
+
+제한 사항:
+- 감정 비율(percentage)의 총합은 반드시 100이어야 해.
+- 청소년 사용자가 상처받거나 차갑게 느끼지 않도록 엄격한 진단조의 말투는 피하고, 오직 '공감과 수용'의 태도로 일관해줘.
+- empathy_message는 3~4문장 내외로 따뜻한 위로의 편지 형태로 친근한 반말로 작성해줘.`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: diaryText,
+        config: {
+          systemInstruction,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              emotion_analysis: {
+                type: Type.OBJECT,
+                properties: {
+                  primary_emotion: {
+                    type: Type.STRING,
+                    description: "가장 강하게 느껴지는 감정 이름 (예: 불안, 지침, 외로움, 무기력, 슬픔, 걱정, 설렘, 뿌듯함, 평온, 화남 등)",
+                  },
+                  ratios: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        emotion: { type: Type.STRING, description: "감정 이름" },
+                        percentage: { type: Type.INTEGER, description: "백분율 수치 (전체 감정의 합이 반드시 100이어야 함)" }
+                      },
+                      required: ["emotion", "percentage"]
+                    }
+                  }
+                },
+                required: ["primary_emotion", "ratios"]
+              },
+              empathy_message: {
+                type: Type.STRING,
+                description: "청소년 사용자에게 깊이 공감하고 위로해 주는 따뜻하고 다정한 반말 편지 내용 (3~4문장 내외)"
+              }
+            },
+            required: ["emotion_analysis", "empathy_message"]
+          }
+        }
       });
 
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({ error: "알 수 없는 에러가 발생했어." }));
-        throw new Error(errData.error || "서버 응답 오류가 발생했어.");
+      const responseText = response.text;
+      if (!responseText) {
+        throw new Error("마음 분석 결과가 비어있어. 다시 적어볼래?");
       }
 
-      const result: AnalysisResponse = await response.json();
+      const parsedData: AnalysisResponse = JSON.parse(responseText);
+
+      // Verify ratios and adjust if sum is not 100
+      if (parsedData.emotion_analysis && parsedData.emotion_analysis.ratios) {
+        const ratios = parsedData.emotion_analysis.ratios;
+        const sum = ratios.reduce((acc, item) => acc + (item.percentage || 0), 0);
+        if (sum !== 100 && ratios.length > 0) {
+          const diff = 100 - sum;
+          ratios[0].percentage = (ratios[0].percentage || 0) + diff;
+        }
+      }
 
       // Create new diary entry
       const newEntry: DiaryEntry = {
@@ -103,7 +207,7 @@ export default function App() {
         date: getFormattedDate(),
         time: getFormattedTime(),
         content: diaryText,
-        analysis: result,
+        analysis: parsedData,
       };
 
       const updated = [newEntry, ...entries];
@@ -111,8 +215,12 @@ export default function App() {
       setSelectedEntry(newEntry);
       setIsWriting(false);
     } catch (err: any) {
-      console.error("Analysis failed:", err);
-      setError(err.message || "마음을 분석하는 과정에서 잠시 문제가 발생했어. 다시 시도해볼래?");
+      console.error("Direct Gemini API Analysis failed:", err);
+      setError(
+        err.message?.includes("API_KEY") || err.message?.includes("authentication") || err.message?.includes("key")
+          ? "API 키가 만료되었거나 올바르지 않은 것 같아. 우측 상단 'API 키 설정'에서 유효한 Gemini 키인지 확인해줘!"
+          : err.message || "마음을 분석하는 과정에서 잠시 문제가 발생했어. 다시 한 번 적어볼래?"
+      );
     } finally {
       setIsLoading(false);
     }
@@ -166,13 +274,30 @@ export default function App() {
             <div>
               <div className="flex items-center gap-1.5">
                 <h1 className="text-xl font-black tracking-tight text-gray-900 font-sans">마음쉼</h1>
-                <span className="text-[9px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-md border border-indigo-100">AI Counselor</span>
+                <span className="text-[9px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-md border border-indigo-100">Pure Client SPA</span>
               </div>
               <p className="text-xs text-gray-500 mt-0.5 font-medium">학업, 진로, 인간관계로 지친 밤, 조용히 쉬어가는 너만의 정원</p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
+            {/* API Key settings badge */}
+            <button
+              onClick={() => {
+                setTempKey(apiKey);
+                setShowKeyModal(true);
+              }}
+              className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                apiKey
+                  ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                  : "bg-amber-50 text-amber-700 border border-amber-200 animate-pulse"
+              }`}
+              id="header_api_key_btn"
+            >
+              <Key className="w-3.5 h-3.5" />
+              <span>{apiKey ? "API 키 완료" : "API 키 필요"}</span>
+            </button>
+
             {!isWriting && (
               <button
                 onClick={startNewDiary}
@@ -227,7 +352,7 @@ export default function App() {
                     </div>
                   </div>
                   
-                  <h3 className="text-md font-bold text-gray-800 transition-all duration-500 min-h-[24px]">
+                  <h3 className="text-sm font-bold text-gray-800 transition-all duration-500 min-h-[24px]">
                     {loadingMessages[loadingMsgIdx]}
                   </h3>
                   <p className="text-xs text-gray-400 mt-2 max-w-sm">
@@ -253,16 +378,27 @@ export default function App() {
                     <RefreshCw className="w-6 h-6 animate-spin" />
                   </div>
                   <h3 className="text-base font-bold text-gray-800">잠시 숨고르기 오류</h3>
-                  <p className="text-xs text-gray-500 mt-1.5 max-w-md leading-relaxed">
+                  <p className="text-xs text-red-500 mt-1.5 max-w-md leading-relaxed">
                     {error}
                   </p>
-                  <button
-                    onClick={() => setError(null)}
-                    className="mt-5 px-5 py-2.5 bg-purple-500 text-white rounded-xl text-xs font-semibold hover:bg-purple-600 active:scale-95 transition-all"
-                    id="error_retry_btn"
-                  >
-                    일기 다시 작성하기
-                  </button>
+                  <div className="flex gap-2 mt-5">
+                    <button
+                      onClick={() => setError(null)}
+                      className="px-5 py-2.5 bg-purple-500 text-white rounded-xl text-xs font-semibold hover:bg-purple-600 active:scale-95 transition-all"
+                      id="error_retry_btn"
+                    >
+                      일기 다시 작성하기
+                    </button>
+                    {!apiKey && (
+                      <button
+                        onClick={() => setShowKeyModal(true)}
+                        className="px-5 py-2.5 bg-amber-500 text-white rounded-xl text-xs font-semibold hover:bg-amber-600 active:scale-95 transition-all"
+                        id="error_set_key_btn"
+                      >
+                        API 키 설정하기
+                      </button>
+                    )}
+                  </div>
                 </motion.div>
               ) : isWriting ? (
                 // Writing Mode
@@ -321,7 +457,7 @@ export default function App() {
             </AnimatePresence>
           </section>
 
-          {/* RIGHT: Supportive Care Columns (Breathing Guide, Sounds, Logs) */}
+          {/* RIGHT: Supportive Care Columns (Breathing Guide, Logs) */}
           <section className="lg:col-span-5 xl:col-span-4 space-y-6">
             
             {/* Calming Breathing Guide Card */}
@@ -338,6 +474,87 @@ export default function App() {
           </section>
         </div>
       </main>
+
+      {/* API Key Setup Modal Dialog */}
+      <AnimatePresence>
+        {showKeyModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/40 backdrop-blur-xs">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl p-6 max-w-md w-full border border-purple-100 shadow-xl"
+            >
+              <div className="flex items-center justify-between mb-4 pb-2 border-b border-gray-100">
+                <h3 className="text-sm font-bold text-gray-800 flex items-center gap-1.5">
+                  <Key className="w-4 h-4 text-purple-500" />
+                  Gemini API 키 설정
+                </h3>
+                <button
+                  onClick={() => setShowKeyModal(false)}
+                  className="p-1 rounded-lg text-gray-400 hover:bg-gray-100 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveApiKey} className="space-y-4">
+                <p className="text-xs text-gray-500 leading-relaxed">
+                  마음쉼의 일기 감정 분석 및 다정한 답장 기능은 구글의 <strong>Gemini 3.5 Flash AI 모델</strong>을 통해 구동됩니다. 
+                  <br />
+                  설정하신 API 키는 브라우저 내부 로컬 스토리지에만 저장되어 안전합니다.
+                </p>
+
+                <div>
+                  <label className="text-[11px] font-bold text-purple-600 block mb-1.5">Gemini API Key</label>
+                  <input
+                    type="password"
+                    value={tempKey}
+                    onChange={(e) => setTempKey(e.target.value)}
+                    placeholder="AI_지정_API_키를_입력해줘"
+                    className="w-full px-3.5 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-xs text-gray-700 focus:outline-none focus:border-purple-300 transition-all font-mono"
+                    id="api_key_modal_input"
+                  />
+                </div>
+
+                <div className="bg-purple-50/50 p-3 rounded-2xl border border-purple-100 flex flex-col gap-1.5">
+                  <span className="text-[10px] font-bold text-purple-700">💡 아직 API 키가 없니?</span>
+                  <p className="text-[10px] text-gray-500 leading-relaxed">
+                    구글 AI 스튜디오에서 단 10초 만에 무료로 발급받아 사용할 수 있어!
+                  </p>
+                  <a
+                    href="https://aistudio.google.com/app/apikey"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[10px] text-purple-600 font-bold hover:underline flex items-center gap-1 self-start"
+                  >
+                    <span>무료 API 키 발급받기</span>
+                    <ExternalLink className="w-2.5 h-2.5" />
+                  </a>
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTempKey("");
+                    }}
+                    className="px-3.5 py-2 rounded-xl text-xs font-semibold text-red-500 hover:bg-red-50 transition-colors"
+                  >
+                    지우기
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-4 py-2 bg-purple-500 hover:bg-purple-600 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors"
+                  >
+                    설정 저장하기
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Humble comforting footer statement */}
       <footer className="max-w-7xl mx-auto px-4 mt-12 text-center text-[11px] text-gray-400 font-medium">
