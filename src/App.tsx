@@ -159,7 +159,7 @@ export default function App() {
 - empathy_message는 3~4문장 내외로 따뜻한 위로의 편지 형태로 친근한 반말로 작성해줘.`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
+        model: "gemini-3.1-flash",
         contents: diaryText,
         config: {
           systemInstruction,
@@ -514,7 +514,7 @@ export default function App() {
 
               <form onSubmit={handleSaveApiKey} className="space-y-4">
                 <p className="text-xs text-gray-500 leading-relaxed">
-                  마음쉼의 일기 감정 분석 및 다정한 답장 기능은 구글의 <strong>Gemini 2.0 Flash AI 모델</strong>을 통해 구동됩니다. 
+                  마음쉼의 일기 감정 분석 및 다정한 답장 기능은 구글의 <strong>Gemini 3.1 Flash AI 모델</strong>을 통해 구동됩니다. 
                   <br />
                   설정하신 API 키는 브라우저 내부 로컬 스토리지에만 저장되어 안전합니다.
                 </p>
